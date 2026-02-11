@@ -300,7 +300,3 @@ With coverage:
 ```bash
 pytest --cov=pipeline
 ```
-
-## License
-
-Internal use - Leiden University Physics Department
