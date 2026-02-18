@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import paramiko
+import xxhash
 from tqdm import tqdm
 
 from .config import Config
@@ -25,6 +26,7 @@ class TransferResult:
     bytes_transferred: int
     duration_seconds: float
     error: Optional[str] = None
+    local_checksum: Optional[str] = None  # Hash of bytes actually sent
 
 
 class SSHConnection:
@@ -52,11 +54,8 @@ class SSHConnection:
             timeout=self.config.ssh_timeout,
             compress=True  # Enable compression
         )
-        # Increase transport window size for better throughput
         transport = self.ssh_client.get_transport()
         transport.set_keepalive(self.config.ssh_keepalive)
-        transport.default_window_size = self.config.ssh_window_size
-        transport.default_max_packet_size = self.config.ssh_max_packet_size
 
     def get_sftp(self) -> paramiko.SFTPClient:
         """Get SFTP client, connecting if needed."""
@@ -65,12 +64,6 @@ class SSHConnection:
 
         if self.sftp_client is None:
             self.sftp_client = self.ssh_client.open_sftp()
-            # Increase buffer size for better throughput
-            channel = self.sftp_client.get_channel()
-            channel.in_window_size = self.config.ssh_window_size
-            channel.out_window_size = self.config.ssh_window_size
-            channel.in_max_packet_size = self.config.ssh_max_packet_size
-            channel.out_max_packet_size = self.config.ssh_max_packet_size
 
         return self.sftp_client
 
@@ -193,6 +186,9 @@ class TransferManager:
 
             BUFFER_SIZE = self.config.transfer_buffer_size
 
+            # Hash during transfer so the checksum reflects exactly what was sent
+            hasher = xxhash.xxh64()
+
             if show_progress:
                 with tqdm(
                     total=file_size,
@@ -201,26 +197,20 @@ class TransferManager:
                     desc=local_path.name,
                     leave=False
                 ) as pbar:
-                    with open(local_path, "rb") as local_file:
-                        with sftp.file(remote_path, "wb") as remote_file:
-                            remote_file.set_pipelined(True)  # Enable pipelining
-                            while True:
-                                data = local_file.read(BUFFER_SIZE)
-                                if not data:
-                                    break
-                                remote_file.write(data)
-                                pbar.update(len(data))
+                    with open(local_path, "rb") as f_in:
+                        with sftp.file(remote_path, "wb") as f_out:
+                            while chunk := f_in.read(BUFFER_SIZE):
+                                f_out.write(chunk)
+                                hasher.update(chunk)
+                                pbar.update(len(chunk))
                                 if self.progress_callback:
                                     self.progress_callback(relative_path, pbar.n, file_size)
             else:
-                with open(local_path, "rb") as local_file:
-                    with sftp.file(remote_path, "wb") as remote_file:
-                        remote_file.set_pipelined(True)
-                        while True:
-                            data = local_file.read(BUFFER_SIZE)
-                            if not data:
-                                break
-                            remote_file.write(data)
+                with open(local_path, "rb") as f_in:
+                    with sftp.file(remote_path, "wb") as f_out:
+                        while chunk := f_in.read(BUFFER_SIZE):
+                            f_out.write(chunk)
+                            hasher.update(chunk)
 
             duration = (datetime.now() - start_time).total_seconds()
 
@@ -228,7 +218,8 @@ class TransferManager:
                 file_path=relative_path,
                 success=True,
                 bytes_transferred=file_size,
-                duration_seconds=duration
+                duration_seconds=duration,
+                local_checksum=hasher.hexdigest()
             )
 
         except Exception as e:

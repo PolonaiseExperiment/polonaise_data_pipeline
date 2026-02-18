@@ -212,7 +212,12 @@ class SyncOrchestrator:
             result = self.transfer.transfer_file(conn, file_path, relative_path, show_progress=True)
 
             if result.success:
-                # Verify
+                # Update record with the hash of exactly what was sent
+                sent_checksum = result.local_checksum
+                if sent_checksum:
+                    record.local_checksum = sent_checksum
+
+                # Verify remote matches what was sent
                 remote_checksum, error = self.checksum.compute_remote(conn.get_ssh(), remote_path)
                 if error:
                     record.transfer_status = TransferStatus.FAILED.value
@@ -239,7 +244,7 @@ class SyncOrchestrator:
                     record.failed_checksum_count += 1
                     record.last_error = (
                         f"Post-transfer mismatch: "
-                        f"local={record.local_checksum} remote={remote_checksum}"
+                        f"sent={record.local_checksum} remote={remote_checksum}"
                     )
                     record.last_error_time = now
                     result = TransferResult(
@@ -470,6 +475,7 @@ class SyncOrchestrator:
             return stats
 
         log.info("Verifying all tracked files...")
+        mismatched_files = []
 
         with SSHConnection(self.config) as conn:
             all_files = list(self.db.get_all_files())
@@ -535,6 +541,7 @@ class SyncOrchestrator:
                     # Mark as PENDING so next sync retransfers
                     record.transfer_status = TransferStatus.PENDING.value
                     self.db.upsert_file(record)
+                    mismatched_files.append(record.file_name)
                     stats.errors.append(f"Checksum mismatch (quarantined): {record.file_path}")
 
         # Update state
@@ -553,13 +560,25 @@ class SyncOrchestrator:
         if recent_summary:
             log.info(recent_summary)
 
-        # Notify
+        # Notify — include mismatched filenames in Slack
+        mismatch_text = ""
+        if mismatched_files:
+            mismatch_text = "*Mismatched files:*\n" + "\n".join(
+                f"• {name}" for name in mismatched_files[:10]
+            )
+            if len(mismatched_files) > 10:
+                mismatch_text += f"\n… and {len(mismatched_files) - 10} more"
+            if recent_summary:
+                mismatch_text += f"\n\n{recent_summary}"
+        else:
+            mismatch_text = recent_summary
+
         self.slack.notify_verification_complete(
             total_files=stats.files_scanned,
             verified_ok=stats.files_verified,
             mismatches=stats.files_checksum_mismatch,
             errors=stats.files_failed,
-            recent_summary=recent_summary
+            recent_summary=mismatch_text
         )
 
         return stats

@@ -47,8 +47,6 @@ class Config:
     # SSH tuning
     ssh_timeout: int = 30  # seconds
     ssh_keepalive: int = 30  # seconds
-    ssh_window_size: int = 2147483647
-    ssh_max_packet_size: int = 32768 * 4  # 128 KB
 
     # Transfer tuning
     transfer_buffer_size: int = 1024 * 1024  # 1 MB
@@ -120,8 +118,6 @@ class Config:
             remote_command_timeout=int(os.getenv("REMOTE_COMMAND_TIMEOUT", "300")),
             ssh_timeout=int(os.getenv("SSH_TIMEOUT", "30")),
             ssh_keepalive=int(os.getenv("SSH_KEEPALIVE", "30")),
-            ssh_window_size=int(os.getenv("SSH_WINDOW_SIZE", "2147483647")),
-            ssh_max_packet_size=int(os.getenv("SSH_MAX_PACKET_SIZE", str(32768 * 4))),
             transfer_buffer_size=int(os.getenv("TRANSFER_BUFFER_SIZE", str(1024 * 1024))),
             slack_timeout=int(os.getenv("SLACK_TIMEOUT", "30")),
             log_file_path=os.getenv("LOG_FILE_PATH", "transfer.log"),

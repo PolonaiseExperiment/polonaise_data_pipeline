@@ -7,4 +7,4 @@ in a database and only transfers new/modified files.
 Author: tunnell (https://github.com/tunnell)
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
