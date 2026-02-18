@@ -54,15 +54,16 @@ class TestConfig:
                         "MAX_PARALLEL_TRANSFERS", "SKIP_RECENT_MINUTES"]:
                 os.environ.pop(key, None)
 
-    def test_from_env_missing_required(self):
+    def test_from_env_missing_required(self, tmp_path):
         """Test that missing required values raises error."""
         # Clear all relevant env vars
         for key in ["SSH_HOST", "SSH_USERNAME", "SSH_KEY_PATH",
                     "LOCAL_SOURCE_PATH", "REMOTE_DEST_PATH", "DATABASE_PATH"]:
             os.environ.pop(key, None)
 
+        # Use a non-existent .env path so load_dotenv doesn't pick up the real one
         with pytest.raises(ValueError) as exc_info:
-            Config.from_env()
+            Config.from_env(env_path=tmp_path / "nonexistent.env")
 
         assert "Missing required config" in str(exc_info.value)
 

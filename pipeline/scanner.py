@@ -6,10 +6,13 @@ Author: tunnell (https://github.com/tunnell)
 
 import os
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator, Optional, List, Tuple
 from dataclasses import dataclass
+
+from tqdm import tqdm
 
 from .config import Config
 
@@ -111,66 +114,80 @@ class FileScanner:
         """Scan all files in the source directory.
 
         Args:
-            verbose: If True, print debug info about skipped files.
+            verbose: If True, print summary of skipped files.
 
         Yields:
             Path objects for each file (excluding too-recent files).
         """
+        skipped_extension = 0
+        skipped_recent = 0
+
         for root, dirs, files in os.walk(self.source_path):
             for filename in files:
                 file_path = Path(root) / filename
 
                 if not self._should_include(file_path):
-                    if verbose:
-                        print(f"  [SKIP] {filename} - extension not in filter")
+                    skipped_extension += 1
                     continue
 
                 if self._is_too_recent(file_path):
-                    if verbose:
-                        mtime, _ = get_file_times(file_path)
-                        age_mins = (datetime.now() - mtime).total_seconds() / 60
-                        print(f"  [SKIP] {filename} - too recent ({age_mins:.1f} min old, threshold: {self.skip_recent_minutes} min)")
+                    skipped_recent += 1
                     continue
 
                 yield file_path
+
+        if verbose and (skipped_extension or skipped_recent):
+            parts = []
+            if skipped_extension:
+                parts.append(f"{skipped_extension} wrong extension")
+            if skipped_recent:
+                parts.append(f"{skipped_recent} too recent (<{self.skip_recent_minutes} min)")
+            print(f"  Skipped: {', '.join(parts)}")
 
     def scan_since(self, since: datetime, verbose: bool = False) -> Iterator[Path]:
         """Scan for files modified after a specific time.
 
         Args:
             since: Only include files modified after this time.
-            verbose: If True, print debug info about skipped files.
+            verbose: If True, print summary of skipped files.
 
         Yields:
             Path objects for each matching file.
         """
         cutoff_recent = datetime.now() - timedelta(minutes=self.skip_recent_minutes)
+        skipped_extension = 0
+        skipped_not_modified = 0
+        skipped_recent = 0
 
         for root, dirs, files in os.walk(self.source_path):
             for filename in files:
                 file_path = Path(root) / filename
 
                 if not self._should_include(file_path):
-                    if verbose:
-                        print(f"  [SKIP] {filename} - extension not in filter")
+                    skipped_extension += 1
                     continue
 
                 mtime, _ = get_file_times(file_path)
 
-                # Skip if too old (not modified since last scan)
                 if mtime <= since:
-                    if verbose:
-                        print(f"  [SKIP] {filename} - not modified since last scan ({mtime})")
+                    skipped_not_modified += 1
                     continue
 
-                # Skip if too recent (might still be written)
                 if mtime > cutoff_recent:
-                    if verbose:
-                        age_mins = (datetime.now() - mtime).total_seconds() / 60
-                        print(f"  [SKIP] {filename} - too recent ({age_mins:.1f} min old, threshold: {self.skip_recent_minutes} min)")
+                    skipped_recent += 1
                     continue
 
                 yield file_path
+
+        if verbose and (skipped_extension or skipped_not_modified or skipped_recent):
+            parts = []
+            if skipped_extension:
+                parts.append(f"{skipped_extension} wrong extension")
+            if skipped_not_modified:
+                parts.append(f"{skipped_not_modified} not modified")
+            if skipped_recent:
+                parts.append(f"{skipped_recent} too recent (<{self.skip_recent_minutes} min)")
+            print(f"  Skipped: {', '.join(parts)}")
 
     def get_relative_path(self, file_path: Path) -> str:
         """Get path relative to source root."""
@@ -209,64 +226,73 @@ class FileScanner:
         """Count files modified since a specific time."""
         return sum(1 for _ in self.scan_since(since))
 
-    def scan_all_with_stats(self, verbose: bool = False) -> ScanResult:
-        """Scan all files and return stats about skipped files."""
+    def scan_all_with_stats(self, progress_stream=None) -> ScanResult:
+        """Scan all files and return stats about skipped files.
+
+        Args:
+            progress_stream: Stream for tqdm progress bar (default: sys.stdout).
+        """
         result = ScanResult(files=[])
         cutoff_recent = datetime.now() - timedelta(minutes=self.skip_recent_minutes)
 
-        for root, dirs, files in os.walk(self.source_path):
-            for filename in files:
-                file_path = Path(root) / filename
+        pbar = tqdm(desc="Scanning", unit=" dirs",
+                    file=progress_stream or sys.stdout, leave=False)
+        try:
+            for root, dirs, files in os.walk(self.source_path):
+                pbar.update(1)
+                for filename in files:
+                    file_path = Path(root) / filename
 
-                if not self._should_include(file_path):
-                    result.skipped_extension += 1
-                    if verbose:
-                        print(f"  [SKIP] {filename} - extension not in filter")
-                    continue
+                    if not self._should_include(file_path):
+                        result.skipped_extension += 1
+                        continue
 
-                mtime, _ = get_file_times(file_path)
+                    mtime, _ = get_file_times(file_path)
 
-                if mtime > cutoff_recent:
-                    result.skipped_recent += 1
-                    if verbose:
-                        age_mins = (datetime.now() - mtime).total_seconds() / 60
-                        print(f"  [SKIP] {filename} - too recent ({age_mins:.1f} min old, threshold: {self.skip_recent_minutes} min)")
-                    continue
+                    if mtime > cutoff_recent:
+                        result.skipped_recent += 1
+                        continue
 
-                result.files.append(file_path)
+                    result.files.append(file_path)
+        finally:
+            pbar.close()
 
         return result
 
-    def scan_since_with_stats(self, since: datetime, verbose: bool = False) -> ScanResult:
-        """Scan for files modified after a specific time and return stats."""
+    def scan_since_with_stats(self, since: datetime, progress_stream=None) -> ScanResult:
+        """Scan for files modified after a specific time and return stats.
+
+        Args:
+            since: Only include files modified after this time.
+            progress_stream: Stream for tqdm progress bar (default: sys.stdout).
+        """
         result = ScanResult(files=[])
         cutoff_recent = datetime.now() - timedelta(minutes=self.skip_recent_minutes)
 
-        for root, dirs, files in os.walk(self.source_path):
-            for filename in files:
-                file_path = Path(root) / filename
+        pbar = tqdm(desc="Scanning", unit=" dirs",
+                    file=progress_stream or sys.stdout, leave=False)
+        try:
+            for root, dirs, files in os.walk(self.source_path):
+                pbar.update(1)
+                for filename in files:
+                    file_path = Path(root) / filename
 
-                if not self._should_include(file_path):
-                    result.skipped_extension += 1
-                    if verbose:
-                        print(f"  [SKIP] {filename} - extension not in filter")
-                    continue
+                    if not self._should_include(file_path):
+                        result.skipped_extension += 1
+                        continue
 
-                mtime, _ = get_file_times(file_path)
+                    mtime, _ = get_file_times(file_path)
 
-                if mtime <= since:
-                    result.skipped_not_modified += 1
-                    if verbose:
-                        print(f"  [SKIP] {filename} - not modified since last scan ({mtime})")
-                    continue
+                    if mtime <= since:
+                        result.skipped_not_modified += 1
+                        continue
 
-                if mtime > cutoff_recent:
-                    result.skipped_recent += 1
-                    if verbose:
-                        age_mins = (datetime.now() - mtime).total_seconds() / 60
-                        print(f"  [SKIP] {filename} - too recent ({age_mins:.1f} min old, threshold: {self.skip_recent_minutes} min)")
-                    continue
+                    if mtime > cutoff_recent:
+                        result.skipped_recent += 1
+                        continue
 
-                result.files.append(file_path)
+                    result.files.append(file_path)
+        finally:
+            pbar.close()
 
         return result

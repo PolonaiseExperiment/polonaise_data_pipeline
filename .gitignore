@@ -3,6 +3,10 @@
 *.pem
 *.key
 
+# Run configs (per-run .env files) — template is tracked
+runs/*.env
+!runs/template.env
+
 # Python
 __pycache__/
 *.py[cod]

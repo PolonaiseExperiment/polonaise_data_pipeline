@@ -49,14 +49,14 @@ class SSHConnection:
             hostname=self.config.ssh_host,
             username=self.config.ssh_username,
             key_filename=str(self.config.ssh_key_path),
-            timeout=30,
+            timeout=self.config.ssh_timeout,
             compress=True  # Enable compression
         )
         # Increase transport window size for better throughput
         transport = self.ssh_client.get_transport()
-        transport.set_keepalive(30)
-        transport.default_window_size = 2147483647
-        transport.default_max_packet_size = 32768 * 4
+        transport.set_keepalive(self.config.ssh_keepalive)
+        transport.default_window_size = self.config.ssh_window_size
+        transport.default_max_packet_size = self.config.ssh_max_packet_size
 
     def get_sftp(self) -> paramiko.SFTPClient:
         """Get SFTP client, connecting if needed."""
@@ -67,10 +67,10 @@ class SSHConnection:
             self.sftp_client = self.ssh_client.open_sftp()
             # Increase buffer size for better throughput
             channel = self.sftp_client.get_channel()
-            channel.in_window_size = 2147483647  # Max window size
-            channel.out_window_size = 2147483647
-            channel.in_max_packet_size = 32768 * 4  # 128KB packets
-            channel.out_max_packet_size = 32768 * 4
+            channel.in_window_size = self.config.ssh_window_size
+            channel.out_window_size = self.config.ssh_window_size
+            channel.in_max_packet_size = self.config.ssh_max_packet_size
+            channel.out_max_packet_size = self.config.ssh_max_packet_size
 
         return self.sftp_client
 
@@ -129,6 +129,15 @@ class SSHConnection:
         except FileNotFoundError:
             return None
 
+    def move_remote_file(self, src_path: str, dest_path: str) -> None:
+        """Move/rename a file on the remote server.
+
+        Creates destination directory if needed.
+        """
+        dest_dir = "/".join(dest_path.split("/")[:-1])
+        self.ensure_remote_dir(dest_dir)
+        self.get_sftp().rename(src_path, dest_path)
+
 
 class TransferManager:
     """Manages file transfers to remote server."""
@@ -182,8 +191,7 @@ class TransferManager:
             file_size = local_path.stat().st_size
             sftp = conn.get_sftp()
 
-            # Use larger buffer for faster transfers
-            BUFFER_SIZE = 1024 * 1024  # 1MB buffer
+            BUFFER_SIZE = self.config.transfer_buffer_size
 
             if show_progress:
                 with tqdm(

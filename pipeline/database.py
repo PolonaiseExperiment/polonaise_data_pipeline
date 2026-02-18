@@ -6,7 +6,7 @@ Uses TinyDB (JSON-based) for easy migration to MongoDB later.
 Author: tunnell (https://github.com/tunnell)
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Iterator
 from dataclasses import dataclass, field, asdict
@@ -120,6 +120,7 @@ class FileDatabase:
         self.db = TinyDB(db_path)
         self.files = self.db.table("files")
         self.state = self.db.table("state")
+        self.daemon_control = self.db.table("daemon_control")
         self._query = Query()
 
     def close(self):
@@ -194,6 +195,33 @@ class FileDatabase:
             ))
         return counts
 
+    def get_recent_stats(self, hours: int = 6) -> dict:
+        """Get stats for files modified in the last N hours.
+
+        Returns dict with:
+            total: total files modified recently
+            by_status: {status: count} for recent files
+            failed_names: list of filenames that failed/mismatched recently
+        """
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        recent = self.files.search(self._query.file_mtime > cutoff)
+
+        by_status = {}
+        failed_names = []
+        for rec in recent:
+            status = rec.get("transfer_status", "unknown")
+            by_status[status] = by_status.get(status, 0) + 1
+            if status in (TransferStatus.FAILED.value,
+                          TransferStatus.CHECKSUM_MISMATCH.value,
+                          TransferStatus.PENDING.value):
+                failed_names.append(rec.get("file_name", rec.get("file_path", "?")))
+
+        return {
+            "total": len(recent),
+            "by_status": by_status,
+            "failed_names": failed_names,
+        }
+
     # Sync state operations
 
     def get_sync_state(self) -> SyncState:
@@ -228,4 +256,26 @@ class FileDatabase:
         state = self.get_sync_state()
         if state.last_scan_time:
             return datetime.fromisoformat(state.last_scan_time)
+        return None
+
+    # Daemon control operations
+
+    def set_daemon_command(self, command: str) -> None:
+        """Set a command for the daemon to pick up.
+
+        Valid commands: pause, resume, quit, verbose_on, verbose_off
+        """
+        self.daemon_control.truncate()
+        self.daemon_control.insert({
+            "command": command,
+            "timestamp": datetime.now().isoformat()
+        })
+
+    def get_daemon_command(self) -> Optional[str]:
+        """Get and clear pending daemon command. Returns None if no command."""
+        results = self.daemon_control.all()
+        if results:
+            command = results[0].get("command")
+            self.daemon_control.truncate()
+            return command
         return None

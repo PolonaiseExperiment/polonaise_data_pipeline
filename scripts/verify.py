@@ -3,8 +3,8 @@
 Full verification script - run daily to verify all checksums.
 
 Usage:
-    python verify.py           # Full verification of all files
-    python verify.py --quick   # Verify only files not verified in last 24h
+    python verify.py --run run45       # Verify run45
+    python verify.py --quick           # Verify only files not verified in last 24h
 
 Author: tunnell (https://github.com/tunnell)
 """
@@ -16,22 +16,38 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline.config import Config, get_config
+from pipeline.config import Config, get_config, add_config_args, apply_cli_overrides, resolve_config_path
+from pipeline.output import PipelineLogger
 from pipeline.orchestrator import SyncOrchestrator
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run full data verification")
-    parser.add_argument("--quick", action="store_true", help="Only verify files not verified in last 24h")
+    parser.add_argument("--run", dest="run_name", help="Run name (loads runs/<name>.env)")
     parser.add_argument("--config", type=Path, help="Path to .env file")
+    parser.add_argument("--quick", action="store_true", help="Only verify files not verified in last 24h")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Show debug details (checksums)")
+    add_config_args(parser)
     args = parser.parse_args()
+
+    # Resolve config file
+    try:
+        env_path, run_label = resolve_config_path(
+            run_name=args.run_name,
+            config_path=args.config
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
     # Load config
     try:
-        if args.config:
-            config = Config.from_env(args.config)
+        if env_path:
+            config = Config.from_env(env_path)
         else:
             config = get_config()
+
+        apply_cli_overrides(config, args)
 
         errors = config.validate()
         if errors:
@@ -44,38 +60,39 @@ def main():
         print(f"Configuration error: {e}")
         sys.exit(1)
 
-    # Run orchestrator
-    with SyncOrchestrator(config) as orchestrator:
-        if args.quick:
-            print("Quick verification mode - checking files not verified in last 24h")
-            # TODO: Implement quick verification
-            print("Quick mode not yet implemented, running full verification")
+    # Setup logger
+    log_file_path = None
+    if config.log_file_path:
+        log_path = Path(config.log_file_path)
+        if not log_path.is_absolute():
+            log_path = Path(__file__).parent.parent / log_path
+        log_file_path = str(log_path)
 
-        print("Starting full verification...")
-        print(f"Source: {config.local_source_path}")
-        print(f"Destination: {config.ssh_username}@{config.ssh_host}:{config.remote_dest_path}")
-        print()
+    logger = PipelineLogger(
+        run_label=run_label or "",
+        verbose=args.verbose,
+        log_file_path=log_file_path,
+    )
+
+    # Run orchestrator
+    with SyncOrchestrator(config, logger=logger) as orchestrator:
+        if args.quick:
+            logger.info("Quick verification mode — checking files not verified in last 24h")
+            logger.info("Quick mode not yet implemented, running full verification")
+
+        logger.info(f"Source: {config.local_source_path}")
+        logger.info(f"Destination: {config.ssh_username}@{config.ssh_host}:{config.remote_dest_path}")
 
         stats = orchestrator.run_full_verification()
 
-        # Print summary
-        print()
-        print("=" * 40)
-        print("Verification Summary")
-        print("=" * 40)
-        print(f"Files checked: {stats.files_scanned}")
-        print(f"Files verified OK: {stats.files_verified}")
-        print(f"Checksum mismatches: {stats.files_checksum_mismatch}")
-        print(f"Errors: {stats.files_failed}")
-        print(f"Duration: {stats.duration_seconds:.1f} seconds")
-
         if stats.errors:
-            print(f"\nIssues found ({len(stats.errors)}):")
+            logger.info(f"Issues ({len(stats.errors)}):")
             for error in stats.errors[:20]:
-                print(f"  - {error}")
+                logger.info(f"  {error}")
             if len(stats.errors) > 20:
-                print(f"  ... and {len(stats.errors) - 20} more")
+                logger.info(f"  ... and {len(stats.errors) - 20} more")
 
+        logger.close()
         sys.exit(0 if (stats.files_failed == 0 and stats.files_checksum_mismatch == 0) else 1)
 
 

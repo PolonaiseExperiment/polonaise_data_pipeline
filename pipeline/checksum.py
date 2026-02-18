@@ -10,6 +10,8 @@ from typing import Optional, Tuple
 import xxhash
 import paramiko
 
+from .config import Config
+
 
 def compute_xxhash(file_path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     """Compute xxHash64 of a local file.
@@ -30,13 +32,15 @@ def compute_xxhash(file_path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 
 def compute_remote_xxhash(
     ssh_client: paramiko.SSHClient,
-    remote_path: str
+    remote_path: str,
+    timeout: int = 300
 ) -> Tuple[Optional[str], Optional[str]]:
     """Compute xxHash64 of a remote file via SSH command.
 
     Args:
         ssh_client: Connected paramiko SSH client.
         remote_path: Path to file on remote server.
+        timeout: Command timeout in seconds.
 
     Returns:
         Tuple of (checksum, error_message). One will be None.
@@ -44,7 +48,7 @@ def compute_remote_xxhash(
     cmd = f'xxh64sum "{remote_path}"'
 
     try:
-        stdin, stdout, stderr = ssh_client.exec_command(cmd, timeout=300)
+        stdin, stdout, stderr = ssh_client.exec_command(cmd, timeout=timeout)
         exit_status = stdout.channel.recv_exit_status()
 
         if exit_status != 0:
@@ -89,13 +93,18 @@ def check_remote_file_exists(
 class ChecksumManager:
     """Manages checksum computation for local and remote files using xxHash."""
 
-    def __init__(self):
-        """Initialize checksum manager."""
-        self.algorithm = "xxh64"
+    def __init__(self, config: Config):
+        """Initialize checksum manager.
+
+        Args:
+            config: Pipeline configuration.
+        """
+        self.config = config
+        self.algorithm = config.checksum_algorithm
 
     def compute_local(self, file_path: Path) -> str:
         """Compute xxHash64 checksum of a local file."""
-        return compute_xxhash(file_path)
+        return compute_xxhash(file_path, chunk_size=self.config.checksum_chunk_size)
 
     def compute_remote(
         self,
@@ -107,7 +116,7 @@ class ChecksumManager:
         Returns:
             Tuple of (checksum, error_message).
         """
-        return compute_remote_xxhash(ssh_client, remote_path)
+        return compute_remote_xxhash(ssh_client, remote_path, timeout=self.config.remote_command_timeout)
 
     def verify_transfer(
         self,

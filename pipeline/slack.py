@@ -23,14 +23,25 @@ class SlackMessage:
 class SlackNotifier:
     """Sends notifications to Slack."""
 
-    def __init__(self, webhook_url: Optional[str]):
+    def __init__(self, webhook_url: Optional[str], timeout: int = 30,
+                 run_label: str = ""):
         """Initialize notifier.
 
         Args:
             webhook_url: Slack webhook URL. If None, notifications are disabled.
+            timeout: HTTP request timeout in seconds.
+            run_label: Run identifier (e.g. "run45") included in all messages.
         """
         self.webhook_url = webhook_url
+        self.timeout = timeout
+        self.run_label = run_label
         self.enabled = webhook_url is not None and len(webhook_url) > 0
+
+    def _title(self, title: str) -> str:
+        """Prefix a title with the run label if set."""
+        if self.run_label:
+            return f"[{self.run_label}] {title}"
+        return title
 
     def send(self, message: SlackMessage) -> bool:
         """Send a message to Slack.
@@ -60,7 +71,7 @@ class SlackNotifier:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
                 return response.status == 200
         except urllib.error.URLError:
             return False
@@ -90,7 +101,7 @@ class SlackNotifier:
     def notify_sync_started(self, file_count: int) -> bool:
         """Notify that sync has started."""
         return self.send_info(
-            "Pipeline Sync Started",
+            self._title("Sync Started"),
             f"Processing {file_count} new/modified files"
         )
 
@@ -99,40 +110,39 @@ class SlackNotifier:
         transferred: int,
         failed: int,
         bytes_transferred: int,
-        duration_seconds: float
+        duration_seconds: float,
+        recent_summary: str = ""
     ) -> bool:
         """Notify that sync completed."""
         mb = bytes_transferred / (1024 * 1024)
         speed = mb / duration_seconds if duration_seconds > 0 else 0
 
+        body = (
+            f"*Transferred:* {transferred} files\n"
+            f"*Data:* {mb:.1f} MB ({speed:.1f} MB/s)\n"
+            f"*Duration:* {duration_seconds:.0f}s"
+        )
+        if failed > 0:
+            body += f"\n*Failed:* {failed} files"
+        if recent_summary:
+            body += f"\n\n{recent_summary}"
+
         if failed == 0:
-            return self.send_success(
-                "Pipeline Sync Complete",
-                f"*Transferred:* {transferred} files\n"
-                f"*Data:* {mb:.1f} MB\n"
-                f"*Speed:* {speed:.1f} MB/s\n"
-                f"*Duration:* {duration_seconds:.0f}s"
-            )
+            return self.send_success(self._title("Sync Complete"), body)
         else:
-            return self.send_warning(
-                "Pipeline Sync Complete (with errors)",
-                f"*Transferred:* {transferred} files\n"
-                f"*Failed:* {failed} files\n"
-                f"*Data:* {mb:.1f} MB\n"
-                f"*Duration:* {duration_seconds:.0f}s"
-            )
+            return self.send_warning(self._title("Sync Complete (with errors)"), body)
 
     def notify_connection_error(self, error: str) -> bool:
         """Notify about connection error."""
         return self.send_error(
-            "Pipeline Connection Error",
+            self._title("Connection Error"),
             f"*Error:* {error}\n\nSync cannot proceed."
         )
 
     def notify_checksum_mismatch(self, file_path: str, attempt: int) -> bool:
         """Notify about checksum mismatch."""
         return self.send_warning(
-            "Checksum Mismatch",
+            self._title("Checksum Mismatch"),
             f"*File:* {file_path}\n"
             f"*Attempt:* {attempt}\n"
             f"Remote checksum doesn't match local. Will retry."
@@ -143,20 +153,22 @@ class SlackNotifier:
         total_files: int,
         verified_ok: int,
         mismatches: int,
-        errors: int
+        errors: int,
+        recent_summary: str = ""
     ) -> bool:
         """Notify about verification results."""
+        body = (
+            f"*Files checked:* {total_files}\n"
+            f"*OK:* {verified_ok}"
+        )
+        if mismatches > 0:
+            body += f"\n*Mismatches:* {mismatches}"
+        if errors > 0:
+            body += f"\n*Errors:* {errors}"
+        if recent_summary:
+            body += f"\n\n{recent_summary}"
+
         if mismatches == 0 and errors == 0:
-            return self.send_success(
-                "Verification Complete",
-                f"*Files checked:* {total_files}\n"
-                f"*All checksums verified OK*"
-            )
+            return self.send_success(self._title("Verification Complete"), body)
         else:
-            return self.send_error(
-                "Verification Found Issues",
-                f"*Files checked:* {total_files}\n"
-                f"*OK:* {verified_ok}\n"
-                f"*Mismatches:* {mismatches}\n"
-                f"*Errors:* {errors}"
-            )
+            return self.send_error(self._title("Verification Found Issues"), body)

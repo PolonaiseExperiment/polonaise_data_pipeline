@@ -5,10 +5,12 @@ Author: tunnell (https://github.com/tunnell)
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from pipeline.checksum import compute_xxhash, ChecksumManager
+from pipeline.config import Config
 
 
 @pytest.fixture
@@ -72,21 +74,30 @@ class TestXXHash:
 class TestChecksumManager:
     """Tests for ChecksumManager class."""
 
-    def test_compute_local(self, sample_file):
+    @pytest.fixture
+    def mock_config(self):
+        """Create a minimal config for ChecksumManager."""
+        config = MagicMock(spec=Config)
+        config.checksum_algorithm = "xxh64"
+        config.checksum_chunk_size = 8 * 1024 * 1024
+        config.remote_command_timeout = 300
+        return config
+
+    def test_compute_local(self, sample_file, mock_config):
         """Test manager computes xxhash."""
-        manager = ChecksumManager()
+        manager = ChecksumManager(mock_config)
         checksum = manager.compute_local(sample_file)
 
         assert len(checksum) == 16
 
-    def test_algorithm_is_xxh64(self):
+    def test_algorithm_is_xxh64(self, mock_config):
         """Test manager uses xxh64 algorithm."""
-        manager = ChecksumManager()
+        manager = ChecksumManager(mock_config)
         assert manager.algorithm == "xxh64"
 
-    def test_same_as_direct_call(self, sample_file):
+    def test_same_as_direct_call(self, sample_file, mock_config):
         """Test manager returns same result as direct function."""
-        manager = ChecksumManager()
+        manager = ChecksumManager(mock_config)
 
         manager_result = manager.compute_local(sample_file)
         direct_result = compute_xxhash(sample_file)
