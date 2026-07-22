@@ -1,0 +1,32 @@
+# Folders under Z:\MLMP\Zeppelin - DataArchive that are NOT synced to /stor2/polonaise
+#
+# One folder name per line. Blank lines and # comments are ignored.
+# Anything NOT listed here is synced -- so new run folders are picked up automatically.
+#
+# Currently synced: Run45_2025_December_UHDM, Run46_2026_February,
+#                   Run47_2026_April, Run48_2026_May, Run49_2026_Juli
+
+00 - TDMS_2020_Jan_and_2021_Sep_unsorted
+Run12_2020_August
+Run13_2020_Oktober
+Run14_2020_November
+Run21_22_2021_Aug_Nov_TDMS
+Run23_2021_November_TDMS_16ch
+Run24_2022_Feb
+Run25_2022_Feb
+Run26_2022_March
+Run27_2022_March
+Run28_2022_May_Paper_Gravity_Wheel_Fuchs_Uitenbroek_Science_Advances
+Run29_2022_June
+Run2_Run25_TDMS
+Run30_2022_August
+Run32_2022_November
+Run33_2022_December
+Run34_2023_May
+Run35_2023_June
+Run36_2023_July_Sept
+Run37_2023_December
+Run38_2024_April
+Run40_2024_September
+Run41_2025_March
+Run42_2025_Juli

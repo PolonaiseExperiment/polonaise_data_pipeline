@@ -3,8 +3,11 @@
 Full verification script - run daily to verify all checksums.
 
 Usage:
-    python verify.py --run run45       # Verify run45
-    python verify.py --quick           # Verify only files not verified in last 24h
+    python verify.py                   # Verify every file tracked in the archive database
+    python verify.py --quick           # (not yet implemented - falls back to full verification)
+
+Note: verification iterates the database, not the filesystem, so it still checks
+folders that were added to archive_ignore.txt after they were synced.
 
 Author: tunnell (https://github.com/tunnell)
 """

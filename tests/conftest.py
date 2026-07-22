@@ -21,11 +21,16 @@ def clean_env():
         "SSH_HOST", "SSH_USERNAME", "SSH_KEY_PATH",
         "LOCAL_SOURCE_PATH", "REMOTE_DEST_PATH", "DATABASE_PATH",
         "MAX_PARALLEL_TRANSFERS", "SKIP_RECENT_MINUTES",
-        "SLACK_WEBHOOK_URL", "FULL_VERIFY_HOUR"
+        "SLACK_WEBHOOK_URL", "FULL_VERIFY_HOUR",
+        "IGNORE_DIRS", "IGNORE_LIST_FILE", "SKIP_ROOT_FILES"
     ]
 
     # Save original values
     original = {k: os.environ.get(k) for k in env_vars}
+
+    # Clear them so the developer's shell and .env can't leak into tests
+    for k in env_vars:
+        os.environ.pop(k, None)
 
     yield
 

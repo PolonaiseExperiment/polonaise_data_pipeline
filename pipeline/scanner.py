@@ -81,7 +81,9 @@ class FileScanner:
         self,
         source_path: Path,
         skip_recent_minutes: int = 15,
-        extensions: Optional[List[str]] = None
+        extensions: Optional[List[str]] = None,
+        ignore_dirs: Optional[List[str]] = None,
+        skip_root_files: bool = False
     ):
         """Initialize scanner.
 
@@ -90,16 +92,32 @@ class FileScanner:
             skip_recent_minutes: Skip files modified within this many minutes.
             extensions: List of extensions to include (e.g., [".tdms"]).
                         If None, include all files.
+            ignore_dirs: Top-level directory names to skip entirely.
+            skip_root_files: If True, ignore loose files sitting directly in source_path.
         """
         self.source_path = source_path
         self.skip_recent_minutes = skip_recent_minutes
         self.extensions = [e.lower() for e in extensions] if extensions else None
+        self.ignore_dirs = set(ignore_dirs) if ignore_dirs else set()
+        self.skip_root_files = skip_root_files
 
     def _should_include(self, file_path: Path) -> bool:
         """Check if a file should be included based on extension."""
         if self.extensions is None:
             return True
         return file_path.suffix.lower() in self.extensions
+
+    def _prune_dirs(self, root, dirs: list) -> None:
+        """Remove ignored top-level directories from the walk, in place."""
+        if not self.ignore_dirs:
+            return
+        if Path(root) != self.source_path:
+            return
+        dirs[:] = [d for d in dirs if d not in self.ignore_dirs]
+
+    def _is_root_file(self, root) -> bool:
+        """True if we're looking at loose files directly in the source root."""
+        return self.skip_root_files and Path(root) == self.source_path
 
     def _is_too_recent(self, file_path: Path) -> bool:
         """Check if file was modified too recently (might still be written)."""
@@ -123,6 +141,9 @@ class FileScanner:
         skipped_recent = 0
 
         for root, dirs, files in os.walk(self.source_path):
+            self._prune_dirs(root, dirs)
+            if self._is_root_file(root):
+                continue
             for filename in files:
                 file_path = Path(root) / filename
 
@@ -160,6 +181,9 @@ class FileScanner:
         skipped_recent = 0
 
         for root, dirs, files in os.walk(self.source_path):
+            self._prune_dirs(root, dirs)
+            if self._is_root_file(root):
+                continue
             for filename in files:
                 file_path = Path(root) / filename
 
@@ -239,6 +263,9 @@ class FileScanner:
                     file=progress_stream or sys.stdout, leave=False)
         try:
             for root, dirs, files in os.walk(self.source_path):
+                self._prune_dirs(root, dirs)
+                if self._is_root_file(root):
+                    continue
                 pbar.update(1)
                 for filename in files:
                     file_path = Path(root) / filename
@@ -273,6 +300,9 @@ class FileScanner:
                     file=progress_stream or sys.stdout, leave=False)
         try:
             for root, dirs, files in os.walk(self.source_path):
+                self._prune_dirs(root, dirs)
+                if self._is_root_file(root):
+                    continue
                 pbar.update(1)
                 for filename in files:
                     file_path = Path(root) / filename

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 
 from tinydb import TinyDB, Query
+from tinydb.middlewares import CachingMiddleware
+from tinydb.storages import JSONStorage
 from tinydb.table import Document
 
 
@@ -117,7 +119,7 @@ class FileDatabase:
             db_path: Path to the TinyDB JSON file.
         """
         self.db_path = db_path
-        self.db = TinyDB(db_path)
+        self.db = TinyDB(db_path, storage=CachingMiddleware(JSONStorage))
         self.files = self.db.table("files")
         self.state = self.db.table("state")
         self.daemon_control = self.db.table("daemon_control")

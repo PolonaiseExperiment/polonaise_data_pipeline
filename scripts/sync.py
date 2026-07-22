@@ -3,10 +3,12 @@
 Incremental sync script.
 
 Usage:
-    python sync.py --run run45              # Single sync for run45
-    python sync.py --run run46 --daemon     # Daemon mode for run46
-    python sync.py --dry-run                # Show what would be transferred
+    python sync.py                          # One sync pass over the whole archive
+    python sync.py --daemon                 # Daemon mode (normal operation)
     python sync.py --status                 # Show pipeline status
+    python sync.py --config path/to/.env    # Use an alternate config file
+
+Which folders are synced is controlled by archive_ignore.txt, not by this script.
 
 Author: tunnell (https://github.com/tunnell)
 """

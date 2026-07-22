@@ -9,10 +9,35 @@ Author: tunnell (https://github.com/tunnell)
 import os
 import argparse
 from pathlib import Path
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Optional
 
 from dotenv import load_dotenv
+
+
+def _parse_bool(raw: Optional[str], default: bool = False) -> bool:
+    """Parse a boolean from an env var string."""
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_ignore_dirs(raw: Optional[str], list_file: Optional[Path]) -> list[str]:
+    """Parse the ignore list from a file (one name per line) or a comma-separated string.
+
+    The file takes precedence. Blank lines and lines starting with # are skipped.
+    Internal spaces in folder names are preserved.
+    """
+    if list_file and list_file.exists():
+        names = []
+        for line in list_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                names.append(line)
+        return names
+    if raw:
+        return [p.strip() for p in raw.split(",") if p.strip()]
+    return []
 
 
 @dataclass
@@ -56,6 +81,11 @@ class Config:
 
     # Logging
     log_file_path: Optional[str] = "transfer.log"
+
+    # Archive scanning
+    ignore_dirs: list[str] = field(default_factory=list)
+    ignore_list_file: Optional[Path] = None
+    skip_root_files: bool = True
 
     @classmethod
     def from_env(cls, env_path: Optional[Path] = None) -> "Config":
@@ -103,6 +133,13 @@ class Config:
         if missing:
             raise ValueError(f"Missing required config: {', '.join(missing)}")
 
+        ignore_list_file_raw = os.getenv("IGNORE_LIST_FILE")
+        ignore_list_file = None
+        if ignore_list_file_raw:
+            ignore_list_file = Path(ignore_list_file_raw)
+            if not ignore_list_file.is_absolute():
+                ignore_list_file = Path(__file__).parent.parent / ignore_list_file
+
         return cls(
             ssh_host=ssh_host,
             ssh_username=ssh_username,
@@ -121,6 +158,9 @@ class Config:
             transfer_buffer_size=int(os.getenv("TRANSFER_BUFFER_SIZE", str(1024 * 1024))),
             slack_timeout=int(os.getenv("SLACK_TIMEOUT", "30")),
             log_file_path=os.getenv("LOG_FILE_PATH", "transfer.log"),
+            ignore_dirs=_parse_ignore_dirs(os.getenv("IGNORE_DIRS"), ignore_list_file),
+            ignore_list_file=ignore_list_file,
+            skip_root_files=_parse_bool(os.getenv("SKIP_ROOT_FILES"), True),
         )
 
     def validate(self) -> list[str]:
@@ -139,6 +179,19 @@ class Config:
         if self.skip_recent_minutes < 0:
             errors.append("SKIP_RECENT_MINUTES must be >= 0")
 
+        if self.ignore_list_file and not self.ignore_list_file.exists():
+            errors.append(f"Ignore list file not found: {self.ignore_list_file}")
+
+        for name in self.ignore_dirs:
+            if "/" in name or "\\" in name:
+                errors.append(
+                    f"IGNORE_DIRS entries must be top-level folder names, not paths: {name!r}"
+                )
+            elif self.local_source_path.exists() and not (self.local_source_path / name).is_dir():
+                errors.append(
+                    f"Ignore entry does not exist under source: {name!r}"
+                )
+
         return errors
 
     def apply_overrides(self, overrides: dict) -> None:
@@ -154,8 +207,15 @@ class Config:
                 field_type = type(getattr(self, key))
                 if field_type == Path:
                     setattr(self, key, Path(value))
+                elif field_type == bool:
+                    setattr(self, key, _parse_bool(str(value), False))
                 elif field_type == int:
                     setattr(self, key, int(value))
+                elif field_type == list:
+                    if isinstance(value, str):
+                        setattr(self, key, [p.strip() for p in value.split(",") if p.strip()])
+                    else:
+                        setattr(self, key, list(value))
                 else:
                     setattr(self, key, value)
 
@@ -179,6 +239,8 @@ _CLI_OVERRIDES = {
     "remote_command_timeout": ("--remote-command-timeout", "Remote command timeout in seconds"),
     "slack_timeout": ("--slack-timeout", "Slack request timeout in seconds"),
     "log_file_path": ("--log-file-path", "Path to log file"),
+    "ignore_dirs": ("--ignore-dirs", "Comma-separated top-level folders to skip"),
+    "skip_root_files": ("--skip-root-files", "Skip loose files in the archive root (true/false)"),
 }
 
 

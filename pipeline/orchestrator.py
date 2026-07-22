@@ -59,7 +59,9 @@ class SyncOrchestrator:
         self.db = FileDatabase(self.config.database_path)
         self.scanner = FileScanner(
             self.config.local_source_path,
-            skip_recent_minutes=self.config.skip_recent_minutes
+            skip_recent_minutes=self.config.skip_recent_minutes,
+            ignore_dirs=self.config.ignore_dirs,
+            skip_root_files=self.config.skip_root_files
         )
         self.checksum = ChecksumManager(self.config)
         self.transfer = TransferManager(self.config)
@@ -528,9 +530,10 @@ class SyncOrchestrator:
                     # Quarantine the bad remote file
                     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
                     filename = remote_path.rsplit("/", 1)[-1]
+                    rel_quarantine = record.file_path.replace("\\", "/")
                     quarantine_path = (
                         f"{self.config.remote_dest_path}/_mismatched/"
-                        f"{filename}.{ts}"
+                        f"{rel_quarantine}.{ts}"
                     )
                     try:
                         conn.move_remote_file(remote_path, quarantine_path)
