@@ -230,13 +230,49 @@ Phase 1: Check files
 │   └── Mark for transfer if needed
 
 Phase 2: Transfer files (parallel)
-├── Transfer files via SFTP
+├── Transfer files via SFTP (persistent connection per worker thread)
 ├── Verify remote checksum after transfer
 └── Update database with status
 
 Phase 3: Cleanup
 ├── Sync database to remote
 └── Send Slack notification
+```
+
+### Compressed Transfers (COMPRESSION_ENABLED=true)
+
+Large single-channel `.tdms` files travel compressed (~12x smaller on the
+wire) and land on the remote in two forms:
+
+```
+REMOTE_COMPRESSED_PATH/<run>/x.flac + x.json    faithful restoration bundle
+REMOTE_DEST_PATH/<run>/x.tdms                   readable rebuilt TDMS
+```
+
+Per file: encode TDMS -> FLAC + JSON sidecar locally (integer-code
+transform from PolonaiseExperiment/compression; the encoder decodes its own
+output and bit-compares before anything ships) -> upload both, wire-verified
+with xxh64 -> `scripts/remote_decode.py` runs on the remote (venv) to
+rebuild the `.tdms` at the normal destination path and re-verify the
+float64 sample hash end-to-end.
+
+The rebuilt file holds bit-identical data and channel properties but a
+different segment layout, so its *file* hash legitimately differs from the
+original's — records track `data_checksum` (samples), `local_checksum`
+(original file) and `remote_checksum` (rebuilt file) separately, and full
+verification checks the rebuilt tdms, the .flac and the .json against their
+recorded hashes.
+
+Not everything compresses: multi-channel/odd TDMS, files under
+`COMPRESSION_MIN_BYTES`, and any file the codec can't reproduce bit-exactly
+fall back to plain byte-copy transfers automatically. `.tdms_index` files
+ship (uncompressed) to the *compressed* tree: they describe the original
+segment layout, which does not match rebuilt files.
+
+Check a machine's codec against real archive files any time with:
+
+```bash
+python scripts/verify_compression.py --dir "Z:\path\to\RunXX" --sample 5
 ```
 
 ### File States
@@ -265,7 +301,8 @@ polonaise_data_pipeline/
 │   ├── database.py         # TinyDB file tracking
 │   ├── checksum.py         # xxHash computation
 │   ├── scanner.py          # File discovery, ignore list handling
-│   ├── transfer.py         # Paramiko SFTP
+│   ├── transfer.py         # Paramiko SFTP (tuned socket, pipelined writes)
+│   ├── flaccodec.py        # Lossless TDMS <-> FLAC codec (also runs remotely)
 │   ├── slack.py            # Notifications
 │   ├── output.py           # Structured logging (terminal + log file)
 │   ├── daemon.py           # Daemon loop and keyboard controls
@@ -276,7 +313,9 @@ polonaise_data_pipeline/
 │
 ├── scripts/
 │   ├── sync.py             # Incremental sync entry point
-│   └── verify.py           # Full verification entry point
+│   ├── verify.py           # Full verification entry point
+│   ├── verify_compression.py  # Prove codec bit-exactness on real files
+│   └── remote_decode.py    # Runs ON THE REMOTE: rebuild .tdms from .flac
 │
 └── tests/
     └── test_*.py           # Unit tests

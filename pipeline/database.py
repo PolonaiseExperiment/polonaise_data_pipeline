@@ -60,6 +60,20 @@ class FileRecord:
     remote_checksum: Optional[str] = None
     checksum_algorithm: str = "xxh64"
 
+    # Compressed transfer (TDMS -> FLAC codec)
+    # remote_tree: which remote root this file lives under -
+    #   "uncompressed" (REMOTE_DEST_PATH) or "compressed" (REMOTE_COMPRESSED_PATH).
+    # For compressed TDMS records, remote_checksum holds the hash of the
+    # REBUILT remote .tdms (not the original bytes); local_checksum stays the
+    # original file's hash; data_checksum is the xxh64 of the float64 samples
+    # and is the end-to-end integrity reference.
+    remote_tree: str = "uncompressed"
+    compressed: bool = False
+    data_checksum: Optional[str] = None
+    compressed_checksum: Optional[str] = None  # .flac bytes as sent
+    sidecar_checksum: Optional[str] = None  # .json bytes as sent
+    compressed_bytes: Optional[int] = None
+
     # Transfer status
     transfer_status: str = TransferStatus.PENDING.value
     transfer_attempts: int = 0
@@ -124,6 +138,15 @@ class FileDatabase:
         self.state = self.db.table("state")
         self.daemon_control = self.db.table("daemon_control")
         self._query = Query()
+
+    def flush(self):
+        """Write the in-memory cache to disk.
+
+        CachingMiddleware batches writes (flushing only every ~1000 writes or
+        on close); call this at checkpoints so a killed process loses at most
+        the current in-flight records, and before uploading the on-disk file.
+        """
+        self.db.storage.flush()
 
     def close(self):
         """Close database connection."""

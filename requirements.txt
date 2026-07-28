@@ -5,6 +5,11 @@ tinydb>=4.8.0
 tqdm>=4.66.0
 nptdms>=1.9.0
 
+# TDMS <-> FLAC compressed transfers (pipeline/flaccodec.py)
+# The REMOTE decode venv needs: numpy, soundfile, nptdms, xxhash
+numpy>=1.24.0
+soundfile>=0.12.0
+
 # Testing
 pytest>=8.0.0
 pytest-cov>=4.0.0

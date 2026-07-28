@@ -87,6 +87,19 @@ class Config:
     ignore_list_file: Optional[Path] = None
     skip_root_files: bool = True
 
+    # Compressed transfers (TDMS -> FLAC codec, rebuilt on the remote)
+    compression_enabled: bool = False
+    remote_compressed_path: Optional[str] = None  # root for .flac/.json/.tdms_index
+    compression_min_bytes: int = 10 * 1024 * 1024  # smaller TDMS go plainly
+    remote_python: Optional[str] = None  # venv python on the remote
+    remote_repo_path: Optional[str] = None  # git clone of this repo on the remote
+
+    # Remote copy of the database (was hardcoded to <dest>/pipeline.json)
+    remote_db_path: Optional[str] = None
+
+    # Transfer ordering: top-level archive folders to sync first
+    priority_dirs: list[str] = field(default_factory=list)
+
     @classmethod
     def from_env(cls, env_path: Optional[Path] = None) -> "Config":
         """Load configuration from environment variables.
@@ -161,6 +174,13 @@ class Config:
             ignore_dirs=_parse_ignore_dirs(os.getenv("IGNORE_DIRS"), ignore_list_file),
             ignore_list_file=ignore_list_file,
             skip_root_files=_parse_bool(os.getenv("SKIP_ROOT_FILES"), True),
+            compression_enabled=_parse_bool(os.getenv("COMPRESSION_ENABLED"), False),
+            remote_compressed_path=os.getenv("REMOTE_COMPRESSED_PATH"),
+            compression_min_bytes=int(os.getenv("COMPRESSION_MIN_BYTES", str(10 * 1024 * 1024))),
+            remote_python=os.getenv("REMOTE_PYTHON"),
+            remote_repo_path=os.getenv("REMOTE_REPO_PATH"),
+            remote_db_path=os.getenv("REMOTE_DB_PATH"),
+            priority_dirs=[p.strip() for p in os.getenv("PRIORITY_DIRS", "").split(",") if p.strip()],
         )
 
     def validate(self) -> list[str]:
@@ -190,6 +210,20 @@ class Config:
             elif self.local_source_path.exists() and not (self.local_source_path / name).is_dir():
                 errors.append(
                     f"Ignore entry does not exist under source: {name!r}"
+                )
+
+        if self.compression_enabled:
+            if not self.remote_compressed_path:
+                errors.append("COMPRESSION_ENABLED requires REMOTE_COMPRESSED_PATH")
+            if not self.remote_python:
+                errors.append("COMPRESSION_ENABLED requires REMOTE_PYTHON (venv python on the remote)")
+            if not self.remote_repo_path:
+                errors.append("COMPRESSION_ENABLED requires REMOTE_REPO_PATH (repo clone on the remote)")
+
+        for name in self.priority_dirs:
+            if "/" in name or "\\" in name:
+                errors.append(
+                    f"PRIORITY_DIRS entries must be top-level folder names, not paths: {name!r}"
                 )
 
         return errors
@@ -241,6 +275,13 @@ _CLI_OVERRIDES = {
     "log_file_path": ("--log-file-path", "Path to log file"),
     "ignore_dirs": ("--ignore-dirs", "Comma-separated top-level folders to skip"),
     "skip_root_files": ("--skip-root-files", "Skip loose files in the archive root (true/false)"),
+    "compression_enabled": ("--compression-enabled", "Compress TDMS to FLAC for transfer (true/false)"),
+    "remote_compressed_path": ("--remote-compressed-path", "Remote root for compressed artifacts"),
+    "compression_min_bytes": ("--compression-min-bytes", "Only compress TDMS files at least this large"),
+    "remote_python": ("--remote-python", "Python interpreter on the remote (venv)"),
+    "remote_repo_path": ("--remote-repo-path", "Path of this repo's clone on the remote"),
+    "remote_db_path": ("--remote-db-path", "Remote path for the database copy"),
+    "priority_dirs": ("--priority-dirs", "Comma-separated top-level folders to transfer first"),
 }
 
 
