@@ -41,6 +41,17 @@ MISMATCH_ABORT_COUNT = 5
 # of cryptic SSH banner failures).
 REMOTE_MIN_FREE_GB = 100
 
+# At most this many SSH handshakes in flight at once: sshd's MaxStartups
+# (default ~10) drops connection BURSTS, not established connections, so
+# many workers may hold connections as long as they authenticate a few at
+# a time.
+CONNECT_CONCURRENCY = 4
+
+# At most this many local FLAC encodes at once: each 229 MB TDMS encode
+# peaks >1 GB of RAM, so this — not worker count — bounds local memory.
+# 3 slots / ~3.5 s per encode outruns what 30+ workers can ship.
+ENCODE_CONCURRENCY = 3
+
 
 def _looks_like_conn_error(error: Optional[str]) -> bool:
     """Heuristic: is this failure worth one retry on a fresh SSH connection?"""
@@ -105,6 +116,8 @@ class SyncOrchestrator:
         self._tls = threading.local()
         self._all_conns: List[SSHConnection] = []
         self._conns_lock = threading.Lock()
+        self._connect_sem = threading.Semaphore(CONNECT_CONCURRENCY)
+        self._encode_sem = threading.Semaphore(ENCODE_CONCURRENCY)
 
         # TinyDB tables are not thread-safe; serialize all writes
         self._db_lock = threading.Lock()
@@ -125,7 +138,8 @@ class SyncOrchestrator:
         conn = getattr(self._tls, "conn", None)
         if conn is None:
             conn = SSHConnection(self.config)
-            conn.connect()
+            with self._connect_sem:
+                conn.connect()
             self._tls.conn = conn
             with self._conns_lock:
                 self._all_conns.append(conn)
@@ -545,9 +559,10 @@ class SyncOrchestrator:
             # 1. Encode locally; the encoder decodes its own output and
             #    bit-compares before we ship anything
             try:
-                rep = flaccodec.encode_tdms_to_flac(
-                    file_path, tmpdir, exact=True,
-                    original_file_xxh64=record.local_checksum)
+                with self._encode_sem:
+                    rep = flaccodec.encode_tdms_to_flac(
+                        file_path, tmpdir, exact=True,
+                        original_file_xxh64=record.local_checksum)
             except flaccodec.CodecUnsupported as e:
                 self.logger.debug(f"Codec declined {record.file_name}: {e}")
                 return None
