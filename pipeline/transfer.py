@@ -5,6 +5,7 @@ Author: tunnell (https://github.com/tunnell)
 """
 
 import os
+import socket
 from pathlib import Path
 from typing import Optional, Callable, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -41,18 +42,35 @@ class SSHConnection:
         self.config = config
         self.ssh_client: Optional[paramiko.SSHClient] = None
         self.sftp_client: Optional[paramiko.SFTPClient] = None
+        self._known_dirs: set = set()  # remote dirs already ensured on this connection
+
+    # Windows' default socket send buffer caps paramiko at ~64 KB in flight
+    # (~0.5 MB/s at 130 ms RTT). A 4 MiB SO_SNDBUF + TCP_NODELAY measured
+    # 9.3 MB/s per stream on the production route, checksum-verified.
+    SOCKET_SNDBUF = 4 * 1024 * 1024
 
     def connect(self) -> None:
-        """Establish SSH connection with compression enabled."""
+        """Establish SSH connection.
+
+        Compression is off: TDMS payloads are raw ADC data that barely
+        compress, and zlib caps per-stream throughput once writes are
+        pipelined.
+        """
         self.ssh_client = paramiko.SSHClient()
         self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        sock = socket.create_connection(
+            (self.config.ssh_host, 22), timeout=self.config.ssh_timeout)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, self.SOCKET_SNDBUF)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         self.ssh_client.connect(
             hostname=self.config.ssh_host,
             username=self.config.ssh_username,
             key_filename=str(self.config.ssh_key_path),
             timeout=self.config.ssh_timeout,
-            compress=True  # Enable compression
+            compress=False,
+            sock=sock
         )
         transport = self.ssh_client.get_transport()
         transport.set_keepalive(self.config.ssh_keepalive)
@@ -92,6 +110,8 @@ class SSHConnection:
 
     def ensure_remote_dir(self, remote_path: str) -> None:
         """Ensure remote directory exists, creating if needed."""
+        if remote_path in self._known_dirs:
+            return
         sftp = self.get_sftp()
 
         # Split path and create each component
@@ -102,10 +122,17 @@ class SSHConnection:
             if not part:
                 continue
             current = f"{current}/{part}"
+            if current in self._known_dirs:
+                continue
             try:
                 sftp.stat(current)
             except FileNotFoundError:
-                sftp.mkdir(current)
+                try:
+                    sftp.mkdir(current)
+                except IOError:
+                    # Another worker created it between our stat and mkdir
+                    sftp.stat(current)
+            self._known_dirs.add(current)
 
     def file_exists(self, remote_path: str) -> bool:
         """Check if remote file exists."""
@@ -160,20 +187,25 @@ class TransferManager:
         conn: SSHConnection,
         local_path: Path,
         relative_path: str,
-        show_progress: bool = True
+        show_progress: bool = True,
+        remote_path: Optional[str] = None
     ) -> TransferResult:
         """Transfer a single file.
 
         Args:
             conn: SSH connection.
             local_path: Full local path.
-            relative_path: Path relative to source root.
+            relative_path: Path relative to source root (used for reporting,
+                and to derive the remote path when remote_path is None).
             show_progress: Show tqdm progress bar.
+            remote_path: Explicit remote destination; overrides the default
+                REMOTE_DEST_PATH/relative_path mapping.
 
         Returns:
             TransferResult with success/failure info.
         """
-        remote_path = self._get_remote_path(relative_path)
+        if remote_path is None:
+            remote_path = self._get_remote_path(relative_path)
         start_time = datetime.now()
 
         try:
@@ -199,6 +231,11 @@ class TransferManager:
                 ) as pbar:
                     with open(local_path, "rb") as f_in:
                         with sftp.file(remote_path, "wb") as f_out:
+                            # Don't wait for a server ack per 32KB packet;
+                            # without this each stream is capped at ~32KB/RTT.
+                            # Same mode paramiko's own put() uses. Write errors
+                            # may surface at close(), still inside this try.
+                            f_out.set_pipelined(True)
                             while chunk := f_in.read(BUFFER_SIZE):
                                 f_out.write(chunk)
                                 hasher.update(chunk)
@@ -208,6 +245,7 @@ class TransferManager:
             else:
                 with open(local_path, "rb") as f_in:
                     with sftp.file(remote_path, "wb") as f_out:
+                        f_out.set_pipelined(True)
                         while chunk := f_in.read(BUFFER_SIZE):
                             f_out.write(chunk)
                             hasher.update(chunk)
@@ -275,7 +313,7 @@ class TransferManager:
 
         Returns True on success.
         """
-        remote_path = f"{self.config.remote_dest_path}/pipeline.json"
+        remote_path = self.config.remote_db_path or f"{self.config.remote_dest_path}/pipeline.json"
 
         try:
             conn.get_sftp().put(str(db_path), remote_path)
