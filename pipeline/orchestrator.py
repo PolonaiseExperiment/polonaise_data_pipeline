@@ -889,11 +889,17 @@ class SyncOrchestrator:
             }
 
             mismatches_this_pass = 0
+            completions = 0
             for future in as_completed(futures):
                 rec = futures[future]
                 try:
                     record, result = future.result()
                     self._db_upsert(record)
+                    # Passes run for hours; checkpoint the write cache so a
+                    # kill loses at most ~50 records of progress
+                    completions += 1
+                    if completions % 50 == 0:
+                        self.db.flush()
 
                     if record.transfer_status == TransferStatus.CHECKSUM_MISMATCH.value:
                         mismatches_this_pass += 1
