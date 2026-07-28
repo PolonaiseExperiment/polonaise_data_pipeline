@@ -240,14 +240,19 @@ def encode_array_to_flac(data, flac_path, *, wf_increment, wf_start_time,
     flac_path = pathlib.Path(flac_path)
 
     # 1. choose encoding + integer codes (one np.unique, shared with grid fit)
+    # Several workers encode concurrently and each intermediate here is
+    # ~240 MB for a production file — drop each as soon as it's consumed so
+    # peak RSS stays ~1 GB per encode.
     levels, inv = np.unique(data, return_inverse=True)
     idx = inv.ravel().astype(np.int64)  # rank of each sample
+    del inv
     g = recover_codes(data, u=levels)
     use_affine = (g is not None and bits_for_codes(g["codes"]) <= 24
                   and (g["exact"] if exact else True))
     if use_affine:
         encoding, codes = "affine_codes", g["codes"]
         meta_enc = dict(encoding=encoding, offset=g["offset"], step=g["step"])
+        del idx
     elif bits_for_codes(idx) <= 24:  # bit-exact level index
         encoding, codes = "indexed", idx
         meta_enc = dict(encoding=encoding,
@@ -259,14 +264,18 @@ def encode_array_to_flac(data, flac_path, *, wf_increment, wf_start_time,
         full = 2 ** 23 - 1
         codes = np.round(data / scale * full).astype(np.int64)
         meta_enc = dict(encoding=encoding, scale=scale)
+        del idx
+    del g, levels
 
     bps = 16 if bits_for_codes(codes) <= 16 else 24
     shift = 32 - bps
 
     # 2. write FLAC (samples left-justified in int32) + JSON sidecar
     samples = np.ascontiguousarray((codes << shift).astype(np.int32).reshape(-1, 1))
+    del codes
     fs = int(round(1.0 / wf_increment))
     sf.write(str(flac_path), samples, fs, format="FLAC", subtype=f"PCM_{bps}")
+    del samples
     n_written = int(sf.info(str(flac_path)).frames)
 
     start = wf_start_time

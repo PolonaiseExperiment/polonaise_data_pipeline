@@ -48,9 +48,10 @@ REMOTE_MIN_FREE_GB = 100
 CONNECT_CONCURRENCY = 4
 
 # At most this many local FLAC encodes at once: each 229 MB TDMS encode
-# peaks >1 GB of RAM, so this — not worker count — bounds local memory.
-# 3 slots / ~3.5 s per encode outruns what 30+ workers can ship.
-ENCODE_CONCURRENCY = 3
+# peaks ~1 GB of RAM (intermediates are freed eagerly in flaccodec), so
+# this — not worker count — bounds local memory AND system throughput:
+# files/s = ENCODE_CONCURRENCY / encode seconds.
+ENCODE_CONCURRENCY = 4
 
 
 def _looks_like_conn_error(error: Optional[str]) -> bool:
@@ -818,7 +819,7 @@ class SyncOrchestrator:
         # remote stat + maybe a remote checksum, all round-trip bound)
         log.info("Checking which files need transfer...")
         files_to_transfer = []
-        check_workers = min(8, self.config.max_parallel_transfers)
+        check_workers = min(16, self.config.max_parallel_transfers)
 
         with ThreadPoolExecutor(max_workers=check_workers) as executor:
             check_futures = {
