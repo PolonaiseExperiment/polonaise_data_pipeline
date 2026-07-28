@@ -36,6 +36,12 @@ DECODE_FAIL_HALT_STREAK = 5
 # transport bug should halt loudly, not burn days quarantining terabytes.
 MISMATCH_ABORT_COUNT = 5
 
+# Abort the pass after this many CONSECUTIVE connection-type failures.
+# When the server starts refusing us (rate limit, full disk, sshd down),
+# fast-failing through the whole queue at ~10 files/s is itself a
+# connection storm that digs the hole deeper.
+CONN_FAIL_ABORT_STREAK = 12
+
 # Refuse to start transferring if the remote filesystem has less free space
 # than this (the archive once filled the disk, which showed up as thousands
 # of cryptic SSH banner failures).
@@ -868,6 +874,12 @@ class SyncOrchestrator:
         if self.config.priority_dirs:
             files_to_transfer.sort(key=lambda t: self._priority_rank(t[1].file_path))
 
+        # Drop the check phase's connections now: its executor threads are
+        # gone, and the transfer executor opens its own. Otherwise peak
+        # connection count is check + transfer combined, which is what
+        # tripped the server's per-IP limit on 2026-07-28.
+        self._close_all_conns()
+
         log.info(f"  {len(files_to_transfer)} {'file needs' if len(files_to_transfer) == 1 else 'files need'} transfer")
         if stats.files_verified > 0:
             log.info(f"  {stats.files_verified} already on remote")
@@ -889,6 +901,7 @@ class SyncOrchestrator:
             }
 
             mismatches_this_pass = 0
+            conn_fail_streak = 0
             completions = 0
             for future in as_completed(futures):
                 rec = futures[future]
@@ -906,6 +919,20 @@ class SyncOrchestrator:
                         if mismatches_this_pass >= MISMATCH_ABORT_COUNT:
                             msg = (f"ABORTING pass: {mismatches_this_pass} checksum "
                                    f"mismatches — this smells systemic, not random")
+                            log.info(msg)
+                            stats.errors.append(msg)
+                            self.slack.notify_connection_error(msg)
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+
+                    if result.success or not _looks_like_conn_error(result.error):
+                        conn_fail_streak = 0
+                    else:
+                        conn_fail_streak += 1
+                        if conn_fail_streak >= CONN_FAIL_ABORT_STREAK:
+                            msg = (f"ABORTING pass: {conn_fail_streak} consecutive "
+                                   f"connection failures — the server is refusing us; "
+                                   f"backing off until the next pass")
                             log.info(msg)
                             stats.errors.append(msg)
                             self.slack.notify_connection_error(msg)
